@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>日報の入力（見本）</title>
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <!-- 画面の見本。LINE にも GAS にもつながず、入力した内容はどこにも送らない。名前と数字はすべて架空。 -->
+    <div class="sample-banner">見本です。入力した内容はどこにも送られません（名前と数字は架空です）</div>
+    <div id="app" aria-live="polite"></div>
+    <script src="../report-form.js"></script>
+    <script src="../app.js"></script>
+    <script src="mock-server.js"></script>
+    <script>
+      startReportApp(createMockServer(new Date()));
+    </script>
+  </body>
+</html>

@@ -1,0 +1,523 @@
+/* 日報の入力画面の見た目。縦向きのスマホで、横にずらさずに使えるようにする。
+   iPhone で入力欄を押したときに画面が拡大されないよう、文字は16ピクセル以上にする。 */
+
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --text: #1d2129;
+  --muted: #5f6672;
+  --line: #d9dce1;
+  --primary: #06c755;
+  --primary-text: #ffffff;
+  --primary-dark: #05a647;
+  --warn-bg: #fff6d6;
+  --warn-line: #e3b500;
+  --error-bg: #fdecec;
+  --error-line: #d93a3a;
+  --info-bg: #e8f3ff;
+  --info-line: #5b9be0;
+  --sample-bg: #3b3f47;
+  --sample-text: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+    'Yu Gothic', sans-serif;
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+.sample-banner {
+  background: var(--sample-bg);
+  color: var(--sample-text);
+  font-size: 13px;
+  padding: 6px 16px;
+  text-align: center;
+}
+
+.page {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 0 16px calc(96px + env(safe-area-inset-bottom));
+}
+
+/* 上の帯（戻る、日付と店舗、何問目か） */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--line);
+  margin: 0 -16px 16px;
+  padding: 0 16px;
+}
+
+.topbar .back {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  padding: 8px 4px;
+  min-width: 64px;
+  text-align: left;
+}
+
+.topbar .context {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.topbar .progress {
+  min-width: 64px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+h1 {
+  font-size: 22px;
+  line-height: 1.4;
+  margin: 8px 0 4px;
+}
+
+h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.help {
+  color: var(--muted);
+  font-size: 15px;
+  margin: 0 0 16px;
+}
+
+/* 数字の欄 */
+.amount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  padding: 4px 14px;
+}
+
+.amount:focus-within {
+  border-color: var(--primary);
+}
+
+.amount input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 28px;
+  padding: 8px 0;
+  color: var(--text);
+}
+
+.amount .unit {
+  font-size: 18px;
+  color: var(--muted);
+}
+
+.preview {
+  color: var(--muted);
+  font-size: 15px;
+  margin-top: 6px;
+  min-height: 24px;
+}
+
+/* 経費のように、1つの画面に数字の欄が並ぶとき */
+.rows {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.row:first-child {
+  border-top: none;
+}
+
+.row label {
+  flex: 1;
+}
+
+.row input {
+  width: 9em;
+  font-size: 20px;
+  text-align: right;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.row .unit {
+  color: var(--muted);
+}
+
+/* 選ぶボタン（日付、天候など） */
+.choices {
+  display: grid;
+  gap: 10px;
+}
+
+.choices.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 16px;
+  font-size: 19px;
+  background: var(--card);
+  color: var(--text);
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  text-align: left;
+}
+
+.choices.three .choice {
+  justify-content: center;
+}
+
+.choice[aria-pressed='true'] {
+  border-color: var(--primary);
+  background: #e9f9ef;
+  font-weight: 700;
+}
+
+.choice .sub {
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* スタッフ1人分の枠 */
+.person {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.person .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.person select,
+.person input[type='text'] {
+  width: 100%;
+  font-size: 18px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+}
+
+.person .times {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.person .hours {
+  margin-top: 8px;
+  font-size: 15px;
+  color: var(--muted);
+  min-height: 24px;
+}
+
+.person .typed {
+  margin-top: 8px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 200px;
+  font-size: 17px;
+  line-height: 1.6;
+  padding: 12px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  font-family: inherit;
+}
+
+.counter {
+  text-align: right;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* 知らせの枠 */
+.box {
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  border-left: 6px solid;
+}
+
+.box.warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.box.error {
+  background: var(--error-bg);
+  border-color: var(--error-line);
+}
+
+.box.info {
+  background: var(--info-bg);
+  border-color: var(--info-line);
+}
+
+.box ul {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+}
+
+.box li {
+  margin-bottom: 8px;
+}
+
+.box li:last-child {
+  margin-bottom: 0;
+}
+
+/* 確認画面の一覧 */
+.summary {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.summary .section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #fafbfc;
+  border-radius: 12px 12px 0 0;
+}
+
+.summary dl {
+  margin: 0;
+  padding: 6px 14px 10px;
+}
+
+.summary .item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.summary dt {
+  color: var(--muted);
+}
+
+.summary dt {
+  flex: none;
+}
+
+.summary dd {
+  flex: 1;
+}
+
+.summary .item.stacked {
+  display: block;
+  padding: 6px 0;
+}
+
+.summary .item.stacked dd {
+  text-align: left;
+  font-weight: 400;
+}
+
+.summary .item.stacked dt {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.summary dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+}
+
+.summary .item .fix {
+  flex: none;
+  align-self: center;
+}
+
+.summary .comment {
+  padding: 8px 14px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ボタン */
+.actions {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+}
+
+.actions .inner {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.primary,
+.secondary {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 12px;
+  padding: 10px 16px;
+}
+
+.primary {
+  background: var(--primary);
+  color: var(--primary-text);
+  border: none;
+}
+
+.primary:active {
+  background: var(--primary-dark);
+}
+
+.primary:disabled {
+  background: #a8dcbc;
+}
+
+.secondary {
+  background: var(--card);
+  color: var(--text);
+  border: 2px solid var(--line);
+  margin-top: 10px;
+}
+
+.link {
+  border: none;
+  background: none;
+  color: #1a6fd1;
+  font-size: 15px;
+  padding: 4px 0;
+  text-decoration: underline;
+}
+
+.fix {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #1a6fd1;
+  font-size: 14px;
+  border-radius: 8px;
+  padding: 2px 10px;
+}
+
+.add {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  border: 2px dashed var(--line);
+  border-radius: 12px;
+  background: transparent;
+  font-size: 17px;
+  color: var(--text);
+}
+
+.note {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 8px 0 0;
+}
+
+.done-mark {
+  font-size: 48px;
+  text-align: center;
+  color: var(--primary);
+  margin: 24px 0 0;
+}
+
+.center {
+  text-align: center;
+}
+
+pre.report-text {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+}
+
+details summary {
+  color: #1a6fd1;
+  padding: 8px 0;
+}
+
+/* 読み込み中 */
+.busy {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(244, 245, 247, 0.85);
+  font-size: 18px;
+  font-weight: 600;
+}
