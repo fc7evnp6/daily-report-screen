@@ -20,6 +20,9 @@ var PROBE_LAST_TOKEN_KEY = 'probe-last-token'; // 前に開いたときの IDト
 var PROBE_MARK_KEY = 'probe-mark'; // 「印を残す」で残した印
 var PROBE_MARK_BEFORE_KEY = 'probe-mark-before'; // 読み込み直す・ログアウトして読み込み直すの直前に残した印
 var PROBE_LOG_MAX = 300;
+var PROBE_PAGE_KEY_PREFIX = 'probe-page-'; // 画面ごとの記録（その画面だけが書く。後ろに、この回の番号が付く）
+var PROBE_PAGE_KEEP = 30; // 画面ごとの記録を残す数（新しいものから）
+var PROBE_PAGE_SHOW = 12; // まとめに出す画面の数（新しいものから）
 var PROBE_IDB_NAME = 'probe'; // IndexedDB（端末の中のもう1つの置き場所）
 var PROBE_IDB_STORE = 'marks';
 var PROBE_IDB_WAIT_MS = 3000; // IndexedDB の返事を待つ時間（返事がないまま止まることがあるため）
@@ -38,6 +41,8 @@ function startProbe(channel) {
   var shownPhotoUrls = [];
   var pageCode = newCode(3, Math.random); // この回（画面を読み込むたび）の番号。記録の行の［］に付ける
   var writtenHere = []; // この回で、端末の記録に足した行
+  // この回の、画面ごとの記録（この画面だけが書く。みんなで使う記録から行が消えたかを、あとで比べるため）
+  var pageRecord = { code: pageCode, start: Date.now(), hidden: null, lines: [] };
   var storageNotes = []; // この回で起きた、端末の記録の問題 { text, first, count }
 
   // ============================================================
@@ -54,6 +59,7 @@ function startProbe(channel) {
   var marksAtOpenResult = el('div', { className: 'result' });
   var markResult = el('div', { className: 'result' });
   var storageResult = el('div', { className: 'result' });
+  var pagesResult = el('div', { className: 'result' });
   var summaryText = el('textarea', { className: 'summary-text', readonly: true, 'aria-label': '結果のまとめ' });
   var copyResult = el('div', { className: 'result' });
 
@@ -153,7 +159,8 @@ function startProbe(channel) {
       '「印を残す」を押すと、端末の中の2か所（localStorage と IndexedDB）に番号を残します。押してから、次の3つを1つずつ' +
         '試してください：「5」の「読み込み直す」、「5」の「ログアウトして読み込み直す」、右上の×で閉じてトークのリンクから' +
         '開き直す。開き直すと、下の「開いたときに読んだ印」に前の印が出ます。押したときと同じ番号なら、残っています。' +
-        '「5」のボタンは、読み込み直す直前にも別の印（直前の印）を残します。',
+        '「5」のボタンは、読み込み直す直前にも別の印（直前の印）を残します。' +
+        '読み込むたびに、その画面が書いた行を別にも残し、みんなで使う記録から消えていないかを「読み込みごとの確かめ」に出します。',
       [
         el('h3', { text: '開いたときに読んだ印' }),
         marksAtOpenResult,
@@ -166,6 +173,8 @@ function startProbe(channel) {
           });
         }),
         markResult,
+        el('h3', { text: '読み込みごとの確かめ（新しい ' + PROBE_PAGE_SHOW + ' 画面）' }),
+        pagesResult,
         el('h3', { text: 'この回の、端末の記録の問題' }),
         storageResult,
       ]
@@ -178,12 +187,24 @@ function startProbe(channel) {
       button('これまでの記録を消す', 'secondary', function () {
         save(PROBE_LOG_KEY, []);
         writtenHere = [];
+        loadPageRecords().forEach(function (record) {
+          if (record.code !== pageCode) removeKey(PROBE_PAGE_KEY_PREFIX + record.code);
+        });
+        pageRecord.lines = [];
+        savePageRecord();
         updateSummary();
       }),
       copyResult,
     ])
   );
   showStorageNotes();
+  savePageRecord();
+  removeOldPageRecords();
+  window.addEventListener('pagehide', function () {
+    // 読み込み直すときや閉じるときに届く（届かないまま終わることもある）
+    pageRecord.hidden = Date.now();
+    savePageRecord();
+  });
   window.addEventListener('storage', function (event) {
     // 同じ端末で開いている別の画面が、端末の記録を書き換えたときだけ届く
     if (event.key === null || String(event.key).indexOf('probe-') === 0) {
@@ -586,14 +607,58 @@ function startProbe(channel) {
   // 9. 結果のまとめ（端末の中に残し、読み込み直し・開き直しをまたいで並べる）
   // ============================================================
 
+  /**
+   * みんなで使う記録（probe-log）に1行足す。読んで、足して、書き戻す（続けて開いた画面が古い中身を読むと、行が消える）。
+   * 同じ行を、この回の画面ごとの記録にも、読んだ最後の行と一緒に残す（あとで比べるため）。
+   */
   function appendLog(text) {
-    var line = logLine(Date.now() / 1000, channelLabel, pageCode, text);
+    var now = Date.now();
+    var line = logLine(now / 1000, channelLabel, pageCode, text);
     var stored = load(PROBE_LOG_KEY);
     var log = Array.isArray(stored) ? stored : [];
+    var own = { text: line, at: now, readLast: log.length ? log[log.length - 1] : null };
+    pageRecord.lines.push(own);
+    savePageRecord();
     log.push(line);
     writtenHere.push(line);
-    save(PROBE_LOG_KEY, log.slice(-PROBE_LOG_MAX));
+    if (!save(PROBE_LOG_KEY, log.slice(-PROBE_LOG_MAX)).ok) {
+      own.sharedOk = false; // 書けなかった（あとの画面に消されたのではない）
+      savePageRecord();
+    }
     updateSummary();
+  }
+
+  function savePageRecord() {
+    save(PROBE_PAGE_KEY_PREFIX + pageCode, pageRecord);
+  }
+
+  /** 画面ごとの記録をすべて読む（この回の分は、端末に書けていなくても画面の中のものを使う）。 */
+  function loadPageRecords() {
+    var listed = storageKeys(localStore(), PROBE_PAGE_KEY_PREFIX);
+    if (listed.problem) noteStorage('画面ごとの記録（localStorage）：' + listed.problem);
+    return listed.keys
+      .filter(function (key) {
+        return key !== PROBE_PAGE_KEY_PREFIX + pageCode;
+      })
+      .map(load)
+      .filter(function (record) {
+        return record && typeof record.code === 'string' && typeof record.start === 'number' && Array.isArray(record.lines);
+      })
+      .concat([pageRecord]);
+  }
+
+  function removeOldPageRecords() {
+    pagesToRemove(loadPageRecords(), PROBE_PAGE_KEEP).forEach(function (code) {
+      removeKey(PROBE_PAGE_KEY_PREFIX + code);
+    });
+  }
+
+  function removeKey(key) {
+    try {
+      localStore().removeItem(key);
+    } catch (err) {
+      noteStorage(key + '（localStorage）を消すとき：消せなかった（' + storageErrorText(err) + '）');
+    }
   }
 
   function updateSummary() {
@@ -611,6 +676,15 @@ function startProbe(channel) {
     } else {
       keptLines = ['この回で書いたのに、端末の記録にない行が ' + kept.missing.length + ' 行ある：'].concat(kept.missing);
     }
+    var pages = pageReport(loadPageRecords(), log, PROBE_LOG_MAX).slice(-PROBE_PAGE_SHOW);
+    var pageLines = pageReportLines(pages);
+    show(
+      pagesResult,
+      pageLines.join('\n'),
+      pages.every(function (r) {
+        return r.missing.length === 0;
+      })
+    );
     var notes = storageNoteLines();
     summaryText.value = ['疎通確認のまとめ', '環境：' + env, 'この回の番号：［' + pageCode + '］']
       .concat(checks)
@@ -618,6 +692,8 @@ function startProbe(channel) {
       .concat(log.length ? log : ['（なし）'])
       .concat(['この回で書いた行の確かめ：'])
       .concat(keptLines)
+      .concat(['読み込みごとの確かめ（新しい ' + PROBE_PAGE_SHOW + ' 画面。画面ごとの記録と、みんなで使う記録を比べる）：'])
+      .concat(pageLines)
       .concat(['この回の、端末の記録の問題：'])
       .concat(notes.length ? notes : ['なし'])
       .join('\n');
@@ -791,6 +867,154 @@ function markText(mark) {
   return mark.code + '（' + dateTime(mark.at) + '・［' + mark.page + '］の回' + (mark.how ? '・' + mark.how : '') + '）';
 }
 
+/** 端末の記録の名前のうち、prefix で始まるものを並べる。{ keys, problem } */
+function storageKeys(storage, prefix) {
+  if (!storage) return { keys: [], problem: '端末の記録（localStorage）がない' };
+  try {
+    var keys = [];
+    for (var i = 0; i < storage.length; i++) {
+      var key = storage.key(i);
+      if (typeof key === 'string' && key.indexOf(prefix) === 0) keys.push(key);
+    }
+    return { keys: keys.sort(), problem: '' };
+  } catch (err) {
+    return { keys: [], problem: '名前を並べられなかった（' + storageErrorText(err) + '）' };
+  }
+}
+
+// ============================================================
+// 画面ごとの記録と、みんなで使う記録（probe-log）の比べ方
+// 画面ごとの記録（{ code, start, hidden, lines: [{ text, at, readLast }] }。時刻はミリ秒。hidden は閉じた時刻、分からなければ
+// null。readLast は、その行を足す直前に読んだ、みんなで使う記録の最後の行（空なら null）。sharedOk は、みんなで使う記録に
+// 書けたか（false なら書けなかった））は、その画面だけが書く。
+// みんなで使う記録は、どの画面も「読んで、足して、書き戻す」ので、続けて開いた画面が古い中身を読んで書き戻すと、
+// 先に書いた行が消える。画面ごとの記録にあって、みんなで使う記録にない行は、そうして消えたか、書けていなかった行。
+// そのあとに書いた画面が読んだ最後の行が、消えた行より前の行なら、古い中身を読んで書き戻したことが分かる。
+// ============================================================
+
+/** 画面ごとに、書いた行の数、みんなで使う記録にない行（とその直後に書いた画面）、前の画面との重なりを返す。始まった順。 */
+function pageReport(records, sharedLog, max) {
+  var shared = Array.isArray(sharedLog) ? sharedLog : [];
+  var checked = shared.length < max;
+  var sorted = records.slice().sort(function (a, b) {
+    return a.start - b.start;
+  });
+  var allLines = [];
+  var timeOf = {}; // 行の文字 → 書いた時刻（画面ごとの記録にある行だけ）
+  sorted.forEach(function (record) {
+    record.lines.forEach(function (line) {
+      allLines.push({ code: record.code, at: line.at, readLast: line.readLast });
+      timeOf[line.text] = line.at;
+    });
+  });
+  allLines.sort(function (a, b) {
+    return a.at - b.at;
+  });
+  return sorted.map(function (record, i) {
+    var previous = i > 0 ? sorted[i - 1] : null;
+    var previousHidden = previous && typeof previous.hidden === 'number' ? previous.hidden : null;
+    var missing = !checked
+      ? []
+      : record.lines
+          .filter(function (line) {
+            return shared.indexOf(line.text) === -1;
+          })
+          .map(function (line) {
+            var writeFailed = line.sharedOk === false;
+            // 書けなかった行は、あとの画面に消されたのではないので、あとに書いた画面は探さない
+            var later = writeFailed
+              ? null
+              : allLines.filter(function (other) {
+                  return other.at > line.at;
+                })[0];
+            return {
+              text: line.text,
+              at: line.at,
+              laterWriter: later ? later.code : null,
+              laterAfterMs: later ? later.at - line.at : null,
+              laterSawIt: later ? sawLine(later.readLast, line, timeOf) : null,
+              writeFailed: writeFailed,
+            };
+          });
+    return {
+      code: record.code,
+      start: record.start,
+      hidden: typeof record.hidden === 'number' ? record.hidden : null,
+      written: record.lines.length,
+      checked: checked,
+      missing: missing,
+      overlapMs: previousHidden !== null && record.start < previousHidden ? previousHidden - record.start : null,
+      previousEndUnknown: Boolean(previous) && previousHidden === null,
+    };
+  });
+}
+
+/**
+ * あとに書いた画面が、書く直前に読んだ記録に line が入っていたか。true（読んでいた）、false（line より前の行までしか
+ * なかった＝古い中身を読んだ）、null（分からない）。
+ */
+function sawLine(readLast, line, timeOf) {
+  if (readLast === undefined) return null;
+  if (readLast === null) return false; // 空の記録を読んだ
+  if (readLast === line.text) return true;
+  if (Object.prototype.hasOwnProperty.call(timeOf, readLast) && timeOf[readLast] < line.at) return false;
+  return null;
+}
+
+/** 画面ごとの確かめを、1画面1行の文字にする。 */
+function pageReportLines(report) {
+  return report.map(function (r) {
+    var parts = ['［' + r.code + '］' + clockMs(r.start) + '〜' + (r.hidden === null ? '（閉じた時刻なし）' : clockMs(r.hidden))];
+    if (r.overlapMs !== null) parts.push('前の画面が閉じる ' + secondsText(r.overlapMs) + '前に始まった');
+    if (r.previousEndUnknown) parts.push('前の画面の閉じた時刻なし');
+    parts.push('書いた ' + r.written + ' 行');
+    if (!r.checked) parts.push('記録が上限のため調べていない');
+    else if (r.missing.length === 0) parts.push('すべて記録にあった');
+    else {
+      parts.push(
+        r.missing.length + ' 行が記録にない：' +
+          r.missing
+            .map(function (m) {
+              var why;
+              if (m.writeFailed) why = '（記録に書けなかった）';
+              else if (!m.laterWriter) why = '（あとに記録に書いた画面なし）';
+              else if (m.laterSawIt === false) {
+                why = '（' + secondsText(m.laterAfterMs) + 'あとに［' + m.laterWriter + '］が、この行のない古い中身を読んで記録に書き戻した）';
+              } else if (m.laterSawIt === true) why = '（［' + m.laterWriter + '］はこの行を読んでいたが、そのあとで消えた）';
+              else why = '（' + secondsText(m.laterAfterMs) + 'あとに［' + m.laterWriter + '］が記録に書いた）';
+              return '「' + m.text + '」' + why;
+            })
+            .join('、')
+      );
+    }
+    return parts.join('・');
+  });
+}
+
+/** 画面ごとの記録を、新しいものから keep 個だけ残すとき、消すものの番号。 */
+function pagesToRemove(records, keep) {
+  return records
+    .slice()
+    .sort(function (a, b) {
+      return b.start - a.start;
+    })
+    .slice(keep)
+    .map(function (record) {
+      return record.code;
+    });
+}
+
+/** ミリ秒の時刻を「19:20:01.120」にする（端末の時刻で）。 */
+function clockMs(ms) {
+  var d = new Date(ms);
+  var milli = d.getMilliseconds();
+  return clock(ms / 1000) + '.' + (milli < 10 ? '00' : milli < 100 ? '0' : '') + milli;
+}
+
+function secondsText(ms) {
+  return (ms / 1000).toFixed(3) + '秒';
+}
+
 // ============================================================
 // 端末の中のもう1つの置き場所（IndexedDB）。印だけを置き、localStorage と比べる。
 // 失敗しても止まらず、理由を返す（{ ok, problem } や { value, problem }）
@@ -908,5 +1132,9 @@ if (typeof module !== 'undefined') {
     logLine: logLine,
     newCode: newCode,
     markText: markText,
+    storageKeys: storageKeys,
+    pageReport: pageReport,
+    pageReportLines: pageReportLines,
+    pagesToRemove: pagesToRemove,
   };
 }
