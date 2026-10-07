@@ -39,9 +39,9 @@ var STEPS = [
   {
     id: 'envelopeBalance',
     title: '封筒残金はいくらですか？',
-    help: '分からなければ空欄のままでかまいません。',
+    help: '封筒に残っている金額です。残っていなければ 0 と入力してください。',
     kind: 'amount',
-    required: false,
+    required: true,
   },
   { id: 'reviewCount', title: '今月の口コミ数は何件ですか？', help: '毎月7件必達です。', kind: 'count', required: true },
   {
@@ -96,9 +96,16 @@ function startReportApp(server, options) {
       fields: fields,
       expenses: expenses,
       weather: '',
-      staff: [{ name: name, start: '', end: '', typed: false }],
+      staff: [staffMember(name)],
       comment: '',
     };
+  }
+
+  /** スタッフの欄1人分（開始は17:00、終了は選ばれていない。typed は「一覧にない人を入力する」を選んだか）。 */
+  function staffMember(name) {
+    var person = newStaffMember(name);
+    person.typed = false;
+    return person;
   }
 
   // ============================================================
@@ -273,7 +280,7 @@ function startReportApp(server, options) {
       a.weather !== '' ||
       a.comment.trim() !== '' ||
       a.staff.length !== 1 ||
-      a.staff[0].start !== '' ||
+      a.staff[0].start !== newStaffMember('').start ||
       a.staff[0].end !== ''
     );
   }
@@ -525,7 +532,7 @@ function startReportApp(server, options) {
           type: 'button',
           text: '＋ スタッフを足す',
           onclick: function () {
-            state.answers.staff.push({ name: '', start: '', end: '', typed: false });
+            state.answers.staff.push(staffMember(''));
             render();
           },
         })
@@ -719,9 +726,11 @@ function startReportApp(server, options) {
       el('div', { className: 'times' }, [
         timeSelect('開始', startTimeOptions(), person.start, function (value) {
           person.start = value;
+          person.end = endAfterStartChange(value, person.end); // 開始より前か同じになったら、選び直してもらう
         }),
         el('span', { text: '〜' }),
-        timeSelect('終了', endTimeOptions(), person.end, function (value) {
+        // 終了は、開始より後の時刻だけを出す（開始と同じ時刻にならないように）
+        timeSelect('終了', endTimeOptions(person.start), person.end, function (value) {
           person.end = value;
         }),
       ])
@@ -730,6 +739,7 @@ function startReportApp(server, options) {
     return card;
   }
 
+  /** 時刻の選択。まだ選ばれていないとき（value が空）だけ、「開始」「終了」の見出しの行を先頭に出す。 */
   function timeSelect(label, options, value, onChange) {
     var select = el(
       'select',
@@ -740,7 +750,7 @@ function startReportApp(server, options) {
           render();
         },
       },
-      [el('option', { value: '', text: label })].concat(
+      (value ? [] : [el('option', { value: '', text: label })]).concat(
         options.map(function (time) {
           return el('option', { value: time, text: timeLabel(time) });
         })

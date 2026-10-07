@@ -19,6 +19,8 @@ var FIRST_START_MINUTES = 8 * 60;
 var LAST_START_MINUTES = 23 * 60 + 30;
 var FIRST_END_MINUTES = 8 * 60 + 30;
 var LAST_END_MINUTES = 29 * 60;
+// スタッフの欄の、開始の最初の値（それより前の時刻も選べる）
+var DEFAULT_START_TIME = '17:00';
 // 勤務時間を22時の前後に分ける（給与シートの深夜給の欄に合わせる）
 var LATE_NIGHT_START = 22 * 60;
 
@@ -63,14 +65,32 @@ function dateText(day) {
 // 時刻と勤務時間
 // ============================================================
 
+/**
+ * スタッフの欄を1人分つくる（1人目も、「＋ スタッフを足す」で足した人も同じ）。
+ * 開始は DEFAULT_START_TIME。終了は選ばれていない状態にする（ありそうな時刻を入れておくと、
+ * 選び忘れたときに違う勤務時間がそのまま登録され、給与にかかわるため）。
+ */
+function newStaffMember(name) {
+  return { name: name, start: DEFAULT_START_TIME, end: '' };
+}
+
 /** 開始の時刻の選択肢（'08:00' の形）。 */
 function startTimeOptions() {
   return timeOptions(FIRST_START_MINUTES, LAST_START_MINUTES);
 }
 
-/** 終了の時刻の選択肢。日をまたいだ時刻は '25:00' の形（記録と同じ）。 */
-function endTimeOptions() {
-  return timeOptions(FIRST_END_MINUTES, LAST_END_MINUTES);
+/**
+ * 終了の時刻の選択肢。日をまたいだ時刻は '25:00' の形（記録と同じ）。
+ * 開始が選ばれていれば、開始より後の時刻だけ（開始と同じ時刻や、前の時刻は選べない）。
+ */
+function endTimeOptions(start) {
+  var first = start ? toMinutes(start) + TIME_STEP_MINUTES : FIRST_END_MINUTES;
+  return timeOptions(first, LAST_END_MINUTES);
+}
+
+/** 開始を変えたあとの終了。開始より後ならそのまま、前か同じになったら選び直してもらう（空にする）。 */
+function endAfterStartChange(start, end) {
+  return workHours(start, end) ? end : '';
 }
 
 function timeOptions(first, last) {
@@ -187,8 +207,10 @@ function staffProblems(staff) {
       problems.push(label + 'の' + nameError);
       return;
     }
-    if (!person.start || !person.end) {
+    if (!person.start) {
       problems.push(name + 'さんの開始と終了の時刻を選んでください。');
+    } else if (!person.end) {
+      problems.push(name + 'さんの終了の時刻を選んでください。');
     } else if (!workHours(person.start, person.end)) {
       problems.push(name + 'さんの終了の時刻が、開始の時刻より前か同じです。');
     }
@@ -238,8 +260,10 @@ if (typeof module !== 'undefined') {
     defaultReportDate: defaultReportDate,
     selectableReportDates: selectableReportDates,
     dateLabel: dateLabel,
+    newStaffMember: newStaffMember,
     startTimeOptions: startTimeOptions,
     endTimeOptions: endTimeOptions,
+    endAfterStartChange: endAfterStartChange,
     timeLabel: timeLabel,
     workHours: workHours,
     describeWorkHours: describeWorkHours,
