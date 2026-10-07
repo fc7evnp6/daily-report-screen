@@ -4,8 +4,11 @@
 //   ・1時間たった IDトークンの扱い（期限切れになるか、読み込み直し・開き直しで新しくなるか）
 //   ・写真を撮る・アルバムから選ぶ・複数選ぶ、縮めて JPEG に作り直す（写真はどこにも送らない）
 //   ・約1MBの送信が GAS に届くか（写真ではない作り物のデータ。GAS は大きさを返すだけ）
+//   ・端末の中に残したものが、読み込み直し・ログアウトして読み込み直し・閉じて開き直しのあとも残るか
+//     （本物の画面で、入力の途中を端末に残す計画のため。localStorage と IndexedDB の2か所で比べる）
 // 結果は「結果のまとめ」に集め、コピーして伝える。LINE のユーザーIDや名前は、画面にもまとめにも出さない。
 // 読み込み直しや開き直しをまたいで比べるため、記録は端末の中（localStorage）にだけ残す。
+// 端末の中に書けなかった・読めなかったときは、理由を捨てずに画面とまとめに出す。
 //
 // ■ このファイルは公開される。秘密の情報や本物のデータは書かない（GAS の URL と LIFF ID は config.js に書く）。
 
@@ -14,7 +17,13 @@ var PROBE_PHOTO_QUALITY = 0.7; // JPEG の画質
 var PROBE_ECHO_LENGTH = 1000000; // 送る量の確かめ（約1MB）
 var PROBE_LOG_KEY = 'probe-log'; // これまでの記録（端末の中だけ）
 var PROBE_LAST_TOKEN_KEY = 'probe-last-token'; // 前に開いたときの IDトークンの発行時刻
-var PROBE_LOG_MAX = 80;
+var PROBE_MARK_KEY = 'probe-mark'; // 「印を残す」で残した印
+var PROBE_MARK_BEFORE_KEY = 'probe-mark-before'; // 読み込み直す・ログアウトして読み込み直すの直前に残した印
+var PROBE_LOG_MAX = 300;
+var PROBE_IDB_NAME = 'probe'; // IndexedDB（端末の中のもう1つの置き場所）
+var PROBE_IDB_STORE = 'marks';
+var PROBE_IDB_WAIT_MS = 3000; // IndexedDB の返事を待つ時間（返事がないまま止まることがあるため）
+var PROBE_CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 番号に使う文字（見間違えやすい I・L・O・0・1 は使わない）
 
 /**
  * 疎通確認の画面を始める。
@@ -27,6 +36,9 @@ function startProbe(channel) {
   var token = null; // { raw, aud, iat, exp }
   var tokenNote = '';
   var shownPhotoUrls = [];
+  var pageCode = newCode(3, Math.random); // この回（画面を読み込むたび）の番号。記録の行の［］に付ける
+  var writtenHere = []; // この回で、端末の記録に足した行
+  var storageNotes = []; // この回で起きた、端末の記録の問題 { text, first, count }
 
   // ============================================================
   // 画面の部品
@@ -39,6 +51,9 @@ function startProbe(channel) {
   var photoResult = el('div', { className: 'result' });
   var photoList = el('div', { className: 'photos' });
   var echoResult = el('div', { className: 'result' });
+  var marksAtOpenResult = el('div', { className: 'result' });
+  var markResult = el('div', { className: 'result' });
+  var storageResult = el('div', { className: 'result' });
   var summaryText = el('textarea', { className: 'summary-text', readonly: true, 'aria-label': '結果のまとめ' });
   var copyResult = el('div', { className: 'result' });
 
@@ -72,7 +87,7 @@ function startProbe(channel) {
 
   root.appendChild(el('h1', { text: '疎通確認（' + channelLabel + '）' }));
   root.appendChild(
-    card('1. 環境', '開いた場所（LINE の中か）と、OS・LINE のバージョンです。', [envResult])
+    card('1. 環境', '開いた場所（LINE の中か）と、OS・LINE のバージョンです。この回の番号は、記録の行の［］と同じです。', [envResult])
   );
   root.appendChild(
     card(
@@ -101,17 +116,10 @@ function startProbe(channel) {
         '期限切れと出たら、下の2つと、いったん閉じて開き直すことを1つずつ試し、そのたびに「3. GAS に送る」を押します。',
       [
         button('読み込み直す', 'secondary', function () {
-          appendLog('読み込み直した');
-          window.location.reload();
+          reloadAfterMark('読み込み直す', false);
         }),
         button('ログアウトして読み込み直す', 'secondary', function () {
-          appendLog('ログアウトして読み込み直した');
-          try {
-            liff.logout();
-          } catch (err) {
-            appendLog('ログアウトでエラー：' + errorText(err));
-          }
-          window.location.reload();
+          reloadAfterMark('ログアウトして読み込み直す', true);
         }),
       ]
     )
@@ -140,16 +148,49 @@ function startProbe(channel) {
     ])
   );
   root.appendChild(
-    card('8. 結果のまとめ', 'コピーして、開発者に送ってください（LINE のユーザーIDや名前は入っていません）。', [
+    card(
+      '8. 端末に残したものが残るか',
+      '「印を残す」を押すと、端末の中の2か所（localStorage と IndexedDB）に番号を残します。押してから、次の3つを1つずつ' +
+        '試してください：「5」の「読み込み直す」、「5」の「ログアウトして読み込み直す」、右上の×で閉じてトークのリンクから' +
+        '開き直す。開き直すと、下の「開いたときに読んだ印」に前の印が出ます。押したときと同じ番号なら、残っています。' +
+        '「5」のボタンは、読み込み直す直前にも別の印（直前の印）を残します。',
+      [
+        el('h3', { text: '開いたときに読んだ印' }),
+        marksAtOpenResult,
+        button('印を残す', 'primary', function () {
+          show(markResult, '印を残しています…', true);
+          leaveMark(PROBE_MARK_KEY, '印を残す').then(function (left) {
+            var text = '印 ' + left.mark.code + ' を残した（' + leftText(left) + '）';
+            show(markResult, text, left.ls.ok && left.idb.ok);
+            appendLog(text);
+          });
+        }),
+        markResult,
+        el('h3', { text: 'この回の、端末の記録の問題' }),
+        storageResult,
+      ]
+    )
+  );
+  root.appendChild(
+    card('9. 結果のまとめ', 'コピーして、開発者に送ってください（LINE のユーザーIDや名前は入っていません）。', [
       summaryText,
       button('結果をコピー', 'primary', copySummary),
       button('これまでの記録を消す', 'secondary', function () {
-        saveLog([]);
+        save(PROBE_LOG_KEY, []);
+        writtenHere = [];
         updateSummary();
       }),
       copyResult,
     ])
   );
+  showStorageNotes();
+  window.addEventListener('storage', function (event) {
+    // 同じ端末で開いている別の画面が、端末の記録を書き換えたときだけ届く
+    if (event.key === null || String(event.key).indexOf('probe-') === 0) {
+      noteStorage((event.key || 'すべて') + '：ほかの画面（同じ端末で開いている別の疎通確認の画面）が書き換えた');
+    }
+  });
+  readMarksAtOpen();
 
   // ============================================================
   // 1・2. LINE の中で開き、IDトークンを読む
@@ -157,12 +198,14 @@ function startProbe(channel) {
 
   var liffId = window.PROBE_CONFIG && PROBE_CONFIG.liffIds[channel];
   if (!liffId || !PROBE_CONFIG.gasUrl) {
-    show(envResult, 'config.js に、LIFF ID か GAS の URL がまだ入っていません。', false);
+    env = 'config.js に、LIFF ID か GAS の URL がまだ入っていません。';
+    showEnv(false);
     updateSummary();
     return;
   }
   if (typeof liff === 'undefined') {
-    show(envResult, 'LIFF の部品（SDK）を読み込めませんでした。', false);
+    env = 'LIFF の部品（SDK）を読み込めませんでした。';
+    showEnv(false);
     updateSummary();
     return;
   }
@@ -177,7 +220,7 @@ function startProbe(channel) {
         '／LINE ' + (liff.getLineVersion() || '（不明）') + '／LIFF ' + liff.getVersion() +
         '／開いた場所：' + (context.type || '不明') +
         '／送り先を選ぶ画面：' + (liff.isApiAvailable('shareTargetPicker') ? '使える' : '使えない');
-      show(envResult, env, inClient);
+      showEnv(inClient);
       if (!inClient && !liff.isLoggedIn()) {
         show(tokenResult, 'LINE の外で開いています。LINE のトークからリンクを開いてください。', false);
         updateSummary();
@@ -188,9 +231,13 @@ function startProbe(channel) {
     })
     .catch(function (err) {
       env = channelLabel + '／LIFF を始められなかった：' + errorText(err);
-      show(envResult, env, false);
+      showEnv(false);
       updateSummary();
     });
+
+  function showEnv(ok) {
+    show(envResult, env + '\nこの回の番号：［' + pageCode + '］', ok);
+  }
 
   function readToken() {
     var decoded = liff.getDecodedIDToken();
@@ -201,11 +248,11 @@ function startProbe(channel) {
       return;
     }
     token = { raw: raw, aud: decoded.aud, iat: decoded.iat, exp: decoded.exp };
-    var last = loadJson(PROBE_LAST_TOKEN_KEY);
+    var last = load(PROBE_LAST_TOKEN_KEY);
     if (!last) tokenNote = '前に開いた記録なし';
     else if (last.iat === token.iat) tokenNote = '前に開いたとき（発行 ' + clock(last.iat) + '）と同じトークン';
     else tokenNote = '前に開いたとき（発行 ' + clock(last.iat) + '）から新しくなった';
-    saveJson(PROBE_LAST_TOKEN_KEY, { iat: token.iat, channel: channel });
+    save(PROBE_LAST_TOKEN_KEY, { iat: token.iat, channel: channel });
     appendLog('開いた：トークンの発行 ' + clock(token.iat) + '・期限 ' + clock(token.exp) + '（' + tokenNote + '）');
     showToken();
   }
@@ -427,28 +474,152 @@ function startProbe(channel) {
   }
 
   // ============================================================
-  // 8. 結果のまとめ（端末の中に残し、読み込み直し・開き直しをまたいで並べる）
+  // 8. 端末に残したものが残るか（印を残し、開き直したときに読む）
+  // ============================================================
+
+  /** 端末の記録（localStorage）から読む。読めなかったら、理由を「この回の問題」に残す。 */
+  function load(key) {
+    var result = readJson(localStore(), key);
+    if (result.problem) noteStorage(key + '（localStorage）を読むとき：' + result.problem);
+    return result.value;
+  }
+
+  /** 端末の記録（localStorage）に書き、読み直して確かめる。だめなら、理由を「この回の問題」に残す。 */
+  function save(key, value) {
+    var result = writeJson(localStore(), key, value);
+    if (!result.ok) noteStorage(key + '（localStorage）に書くとき：' + result.problem);
+    return result;
+  }
+
+  /** 端末の記録の問題を覚えておく（同じ問題は回数だけ数える）。まとめは、次に作り直すときに入る。 */
+  function noteStorage(text) {
+    var same = storageNotes.filter(function (note) {
+      return note.text === text;
+    })[0];
+    if (same) same.count++;
+    else storageNotes.push({ text: text, first: clock(Date.now() / 1000), count: 1 });
+    showStorageNotes();
+  }
+
+  function storageNoteLines() {
+    return storageNotes.map(function (note) {
+      return note.first + ' ' + note.text + (note.count > 1 ? '（' + note.count + '回）' : '');
+    });
+  }
+
+  function showStorageNotes() {
+    var lines = storageNoteLines();
+    show(storageResult, lines.length ? lines.join('\n') : 'なし', lines.length === 0);
+  }
+
+  /** 印を、localStorage と IndexedDB の両方に残す（どちらも、書いたあとに読み直して確かめる）。 */
+  function leaveMark(key, how) {
+    var mark = { code: newCode(4, Math.random), at: Math.floor(Date.now() / 1000), page: pageCode, how: how };
+    var ls = save(key, mark);
+    return idbWrite(key, mark).then(function (idb) {
+      if (!idb.ok) noteStorage(key + '（IndexedDB）に書くとき：' + idb.problem);
+      return { mark: mark, ls: ls, idb: idb };
+    });
+  }
+
+  function leftText(left) {
+    return (
+      'localStorage：' + (left.ls.ok ? '書けた' : left.ls.problem) +
+      '／IndexedDB：' + (left.idb.ok ? '書けた' : left.idb.problem)
+    );
+  }
+
+  /** 直前の印を残してから、読み込み直す（logout なら、先にログアウトする）。label はボタンの名前。 */
+  function reloadAfterMark(label, logout) {
+    leaveMark(PROBE_MARK_BEFORE_KEY, label + 'の直前').then(function (left) {
+      appendLog('「' + label + '」を押した（直前の印 ' + left.mark.code + '。' + leftText(left) + '）');
+      if (logout) {
+        try {
+          liff.logout();
+        } catch (err) {
+          appendLog('ログアウトでエラー：' + errorText(err));
+        }
+      }
+      window.location.reload();
+    });
+  }
+
+  /** 開いたとき（LIFF を始める前）に、前に残した印を2か所から読んで出す。 */
+  function readMarksAtOpen() {
+    show(marksAtOpenResult, '読んでいます…', true);
+    var keys = [
+      [PROBE_MARK_KEY, '「印を残す」の印'],
+      [PROBE_MARK_BEFORE_KEY, '直前の印'],
+    ];
+    Promise.all(
+      keys.map(function (item) {
+        var ls = load(item[0]);
+        return idbRead(item[0]).then(function (idb) {
+          if (idb.problem) noteStorage(item[0] + '（IndexedDB）を読むとき：' + idb.problem);
+          var lsText = markText(ls);
+          var idbText = idb.problem ? '読めなかった' : markText(idb.value);
+          var same = lsText === idbText;
+          return {
+            ok: same,
+            text: item[1] + '：localStorage ' + lsText + '／IndexedDB ' + (same ? 'も同じ' : idbText),
+          };
+        });
+      })
+    ).then(function (rows) {
+      var text = rows
+        .map(function (row) {
+          return row.text;
+        })
+        .join('\n');
+      show(
+        marksAtOpenResult,
+        text,
+        rows.every(function (row) {
+          return row.ok;
+        })
+      );
+      appendLog('開いたときに読んだ印：' + text.replace(/\n/g, ' ／ '));
+    });
+  }
+
+  // ============================================================
+  // 9. 結果のまとめ（端末の中に残し、読み込み直し・開き直しをまたいで並べる）
   // ============================================================
 
   function appendLog(text) {
-    var log = loadJson(PROBE_LOG_KEY) || [];
-    log.push(dateTime(Date.now() / 1000) + ' ' + channelLabel + '　' + text);
-    saveLog(log.slice(-PROBE_LOG_MAX));
+    var line = logLine(Date.now() / 1000, channelLabel, pageCode, text);
+    var stored = load(PROBE_LOG_KEY);
+    var log = Array.isArray(stored) ? stored : [];
+    log.push(line);
+    writtenHere.push(line);
+    save(PROBE_LOG_KEY, log.slice(-PROBE_LOG_MAX));
     updateSummary();
-  }
-
-  function saveLog(log) {
-    saveJson(PROBE_LOG_KEY, log);
   }
 
   function updateSummary() {
     var checks = chooserChecks.map(function (check) {
       return (check.box.checked ? '☑ ' : '☐ ') + check.label;
     });
-    summaryText.value = ['疎通確認のまとめ', '環境：' + env]
+    var stored = load(PROBE_LOG_KEY);
+    var log = Array.isArray(stored) ? stored : [];
+    var kept = missingLines(writtenHere, log, PROBE_LOG_MAX);
+    var keptLines;
+    if (!kept.checked) {
+      keptLines = ['記録が上限（' + PROBE_LOG_MAX + '行）に達しているので、調べていない（「これまでの記録を消す」を押してから試してください）'];
+    } else if (kept.missing.length === 0) {
+      keptLines = ['この回で書いた ' + writtenHere.length + ' 行は、すべて端末の記録にあった'];
+    } else {
+      keptLines = ['この回で書いたのに、端末の記録にない行が ' + kept.missing.length + ' 行ある：'].concat(kept.missing);
+    }
+    var notes = storageNoteLines();
+    summaryText.value = ['疎通確認のまとめ', '環境：' + env, 'この回の番号：［' + pageCode + '］']
       .concat(checks)
       .concat(['これまでの記録：'])
-      .concat(loadJson(PROBE_LOG_KEY) || ['（なし）'])
+      .concat(log.length ? log : ['（なし）'])
+      .concat(['この回で書いた行の確かめ：'])
+      .concat(keptLines)
+      .concat(['この回の、端末の記録の問題：'])
+      .concat(notes.length ? notes : ['なし'])
       .join('\n');
   }
 
@@ -526,21 +697,189 @@ function pad2(n) {
   return (n < 10 ? '0' : '') + n;
 }
 
-// 端末の中の記録。使えない環境（読み込めない・書けない）でも、画面は動くようにする
-function loadJson(key) {
+// ============================================================
+// 端末の中の記録（localStorage）。使えない環境でも画面は動くようにし、書けなかった・読めなかった理由は捨てずに返す
+// ============================================================
+
+/** 端末の記録。開くこと自体がエラーになる環境では、読み書きのたびに同じエラーを出すものを返す（理由を残すため）。 */
+function localStore() {
   try {
-    return JSON.parse(window.localStorage.getItem(key));
+    return window.localStorage;
   } catch (err) {
-    return null;
+    var fail = function () {
+      throw err;
+    };
+    return { getItem: fail, setItem: fail };
   }
 }
 
-function saveJson(key, value) {
+/** 読む。{ value, problem }。まだ何もなければ、value は null で problem は空。 */
+function readJson(storage, key) {
+  if (!storage) return { value: null, problem: '端末の記録（localStorage）がない' };
+  var text;
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    text = storage.getItem(key);
   } catch (err) {
-    // 残せなくても、この画面の中の確かめはできる
+    return { value: null, problem: '読めなかった（' + storageErrorText(err) + '）' };
   }
+  if (text === null || text === undefined) return { value: null, problem: '' };
+  try {
+    return { value: JSON.parse(text), problem: '' };
+  } catch (err) {
+    return { value: null, problem: '中身の形が壊れていた' };
+  }
+}
+
+/** 書いて、読み直して同じか確かめる。{ ok, problem } */
+function writeJson(storage, key, value) {
+  if (!storage) return { ok: false, problem: '端末の記録（localStorage）がない' };
+  var text = JSON.stringify(value);
+  try {
+    storage.setItem(key, text);
+  } catch (err) {
+    return { ok: false, problem: '書けなかった（' + storageErrorText(err) + '）' };
+  }
+  var back;
+  try {
+    back = storage.getItem(key);
+  } catch (err) {
+    return { ok: false, problem: '書いたあとに読み直せなかった（' + storageErrorText(err) + '）' };
+  }
+  if (back !== text) return { ok: false, problem: '書いたあとに読み直すと、中身が違った' + (back === null ? '（なかった）' : '') };
+  return { ok: true, problem: '' };
+}
+
+/** エラーの名前（と短い説明）。 */
+function storageErrorText(err) {
+  if (!err) return '不明';
+  var name = err.name || 'Error';
+  return err.message ? name + '：' + String(err.message).slice(0, 80) : name;
+}
+
+/**
+ * この回で書いた行（written）のうち、端末の記録（stored）にないものを、書いた順に返す。
+ * 記録が上限の行数に達していたら、古い行を消しているので調べない（checked: false）。
+ */
+function missingLines(written, stored, max) {
+  var kept = Array.isArray(stored) ? stored : [];
+  if (kept.length >= max) return { checked: false, missing: [] };
+  return {
+    checked: true,
+    missing: written.filter(function (line) {
+      return kept.indexOf(line) === -1;
+    }),
+  };
+}
+
+/** 記録の1行。例：「10/7 18:55:30 開発用［Q2M］　開いた」（［］は、この回の番号） */
+function logLine(seconds, channelLabel, pageCode, text) {
+  return dateTime(seconds) + ' ' + channelLabel + '［' + pageCode + '］　' + text;
+}
+
+/** 番号を作る（random は 0 以上 1 未満を返す関数）。 */
+function newCode(length, random) {
+  var code = '';
+  for (var i = 0; i < length; i++) {
+    code += PROBE_CODE_LETTERS.charAt(Math.floor(random() * PROBE_CODE_LETTERS.length));
+  }
+  return code;
+}
+
+/** 印を文字にする。例：「K4P7（10/7 18:55:40・［Q2M］の回・印を残す）」。印でなければ「なし」。 */
+function markText(mark) {
+  if (!mark || typeof mark.code !== 'string') return 'なし';
+  return mark.code + '（' + dateTime(mark.at) + '・［' + mark.page + '］の回' + (mark.how ? '・' + mark.how : '') + '）';
+}
+
+// ============================================================
+// 端末の中のもう1つの置き場所（IndexedDB）。印だけを置き、localStorage と比べる。
+// 失敗しても止まらず、理由を返す（{ ok, problem } や { value, problem }）
+// ============================================================
+
+function idbWrite(key, value) {
+  return idbRun('readwrite', function (store) {
+    store.put(value, key);
+  }).then(function (done) {
+    if (done.problem) return { ok: false, problem: '書けなかった（' + done.problem + '）' };
+    return idbRead(key).then(function (back) {
+      if (back.problem) return { ok: false, problem: '書いたあとに読み直せなかった（' + back.problem + '）' };
+      if (JSON.stringify(back.value) !== JSON.stringify(value)) {
+        return { ok: false, problem: '書いたあとに読み直すと、中身が違った' };
+      }
+      return { ok: true, problem: '' };
+    });
+  });
+}
+
+function idbRead(key) {
+  var request = null;
+  return idbRun('readonly', function (store) {
+    request = store.get(key);
+  }).then(function (done) {
+    if (done.problem) return { value: null, problem: done.problem };
+    return { value: request.result === undefined ? null : request.result, problem: '' };
+  });
+}
+
+/** IndexedDB を開いて、1つの読み書きを行う。終わったら（失敗しても）閉じる。待っても返事がなければ、あきらめる。 */
+function idbRun(mode, work) {
+  return new Promise(function (resolve) {
+    var finished = false;
+    var db = null;
+    var timer = null;
+    var finish = function (problem) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      closeDb();
+      resolve({ problem: problem });
+    };
+    var closeDb = function () {
+      try {
+        if (db) db.close();
+      } catch (err) {
+        // 閉じられなくても、結果は変わらない
+      }
+    };
+    timer = setTimeout(function () {
+      finish(PROBE_IDB_WAIT_MS / 1000 + '秒待っても返事がない');
+    }, PROBE_IDB_WAIT_MS);
+    try {
+      var factory = window.indexedDB;
+      if (!factory) return finish('IndexedDB がない');
+      var open = factory.open(PROBE_IDB_NAME, 1);
+      open.onupgradeneeded = function () {
+        open.result.createObjectStore(PROBE_IDB_STORE);
+      };
+      open.onblocked = function () {
+        finish('開けない（blocked）');
+      };
+      open.onerror = function () {
+        finish('開けない（' + storageErrorText(open.error) + '）');
+      };
+      open.onsuccess = function () {
+        db = open.result;
+        if (finished) return closeDb(); // 待つのをあきらめたあとに開けた
+        try {
+          var tx = db.transaction(PROBE_IDB_STORE, mode);
+          tx.oncomplete = function () {
+            finish('');
+          };
+          tx.onerror = function () {
+            finish(storageErrorText(tx.error));
+          };
+          tx.onabort = function () {
+            finish(tx.error ? storageErrorText(tx.error) : '取り消された');
+          };
+          work(tx.objectStore(PROBE_IDB_STORE));
+        } catch (err) {
+          finish(storageErrorText(err));
+        }
+      };
+    } catch (err) {
+      finish(storageErrorText(err));
+    }
+  });
 }
 
 /** 部品を作る。文字は textContent で入れる（HTML として扱わない）。 */
@@ -558,4 +897,16 @@ function el(tag, props, children) {
     if (child) node.appendChild(child);
   });
   return node;
+}
+
+// Node.js のテスト（test/probe.test.js）から、端末の記録を扱う部分を読めるようにする
+if (typeof module !== 'undefined') {
+  module.exports = {
+    readJson: readJson,
+    writeJson: writeJson,
+    missingLines: missingLines,
+    logLine: logLine,
+    newCode: newCode,
+    markText: markText,
+  };
 }
