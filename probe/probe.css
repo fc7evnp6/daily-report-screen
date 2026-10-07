@@ -1,0 +1,83 @@
+/* 疎通確認の画面だけで使う見た目（ほかは ../style.css と同じ）。 */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px 14px;
+  margin: 0 0 16px;
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.card .help {
+  margin-bottom: 10px;
+}
+
+.card .secondary {
+  margin-top: 8px;
+  text-align: center;
+}
+
+.result {
+  font-size: 15px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 10px;
+}
+
+.result:empty {
+  display: none;
+}
+
+.result.ok {
+  color: #05813a;
+}
+
+.result.ng {
+  color: var(--error-line);
+}
+
+/* 写真を選ぶ欄は隠し、見出し（label）をボタンとして押す */
+.hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.checks label {
+  display: block;
+  font-size: 16px;
+  margin: 6px 0;
+}
+
+.photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.photos figure {
+  margin: 0;
+  width: 96px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.photos img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  display: block;
+}
+
+textarea.summary-text {
+  font-size: 13px;
+  min-height: 220px;
+}

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>疎通確認（公開用）</title>
+    <link rel="stylesheet" href="../../style.css" />
+    <link rel="stylesheet" href="../probe.css" />
+  </head>
+  <body>
+    <!-- 段階2の疎通確認（開発者だけが使う）。LINE ミニアプリの公開用から開く。写真はどこにも送らない。 -->
+    <div class="sample-banner">疎通確認（公開用）。開発者が試すための画面です。写真はどこにも送りません</div>
+    <div id="app" class="page"></div>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="../config.js"></script>
+    <script src="../probe.js"></script>
+    <script>
+      startProbe('pub');
+    </script>
+  </body>
+</html>
