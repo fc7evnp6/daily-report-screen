@@ -3,6 +3,7 @@
 // ■ このファイルは公開される。名前（見本 花子 など）、ブランド（見本アイス）、店舗（見本店）、数字はすべて架空。
 //   本物のブランド名、店舗名、日報の文章は、画面のコードに書かない（本物の画面では GAS から受け取る）。
 // 本物の画面では、GAS に問い合わせる server に差し替える（注意の文章は、GAS が今の関数で作る）。
+// 返事の形は GAS（src/screen-api.js）と同じにする（test/screen-contract.test.js で確かめる）。
 
 var SAMPLE_BRAND = '見本アイス'; // 日報の文章の見本の「#見本アイス見本店」の部分（架空の名前）
 var SAMPLE_STORE = '見本店';
@@ -20,6 +21,7 @@ function createMockServer(now) {
   var base = defaultReportDate(now);
   var registered = {}; // 日付 → { by: 'mine' | 'other', version, answers }
   var results = {}; // 送信ID → 登録の結果（2回押しのまね）
+  var sentKeys = {}; // 管理者に送った（コピーした）日報（日付|店舗|版）
 
   var otherDate = addDays(base, -2);
   registered[otherDate] = { by: 'other', version: 1, answers: null };
@@ -38,7 +40,7 @@ function createMockServer(now) {
         { name: '見本 花子', start: '11:00', end: '19:00' },
         { name: '架空 太郎', start: '17:30', end: '22:00' },
       ],
-      expenses: { food: 1200, iceMix: null, materials: 800, supplies: null, misc: 350, utilities: null, card: null },
+      expenses: { food: 1200, iceMix: 0, materials: 800, supplies: 0, misc: 350, utilities: 0, card: 0 },
       expenseTotal: 2350,
       envelopeBalance: 12000,
       reviewCount: 3,
@@ -127,6 +129,31 @@ function createMockServer(now) {
     return warnings;
   }
 
+  /**
+   * 管理者にまだ送っていない日報（GAS と同じく、本人が入力画面で登録して、送った記録がないもの）。
+   * 見本では、前の日（本人が登録した2回目の報告）を、まだ送っていないことにする。
+   */
+  function unsentReports() {
+    var list = [];
+    Object.keys(registered)
+      .sort()
+      .forEach(function (date) {
+        var saved = registered[date];
+        if (saved.by !== 'mine' || sentKeys[date + '|' + SAMPLE_STORE + '|' + saved.version]) return;
+        list.push({ date: date, store: SAMPLE_STORE, version: saved.version, text: reportText(saved.answers) });
+      });
+    return list;
+  }
+
+  /** 記録した答え（GAS と同じく、経費の空欄は0として返す）。 */
+  function savedAnswers(answers) {
+    var copy = JSON.parse(JSON.stringify(answers));
+    Object.keys(copy.expenses).forEach(function (key) {
+      if (copy.expenses[key] === null) copy.expenses[key] = 0;
+    });
+    return copy;
+  }
+
   function nextVersion(date) {
     return registered[date] ? registered[date].version + 1 : 1;
   }
@@ -135,32 +162,60 @@ function createMockServer(now) {
     loadProfile: function () {
       var candidates = {};
       candidates[SAMPLE_STORE] = SAMPLE_CANDIDATES;
-      return later({ name: SAMPLE_NAME, stores: [SAMPLE_STORE], candidates: candidates });
+      return later({
+        ok: true,
+        name: SAMPLE_NAME,
+        stores: [SAMPLE_STORE],
+        candidates: candidates,
+        dates: selectableReportDates(now),
+        defaultDate: base,
+        unsent: unsentReports(),
+      });
     },
     loadDay: function (store, date) {
       var saved = registered[date];
-      if (!saved) return later({ registered: 'none', version: 0, answers: null });
+      var day = { ok: true, registered: 'none', version: 0, nextVersion: nextVersion(date), answers: null };
+      if (!saved) return later(day);
+      day.version = saved.version;
       // 前の内容を返すのは、本人が登録した日だけ（別の人の日は、登録があることだけを返す）
-      if (saved.by === 'other') return later({ registered: 'other', version: saved.version, answers: null });
-      return later({ registered: 'mine', version: saved.version, answers: saved.answers });
+      day.registered = saved.by;
+      if (saved.by === 'mine') day.answers = saved.answers;
+      return later(day);
     },
     check: function (answers) {
-      return later({ errors: [], warnings: warningsOf(answers), version: nextVersion(answers.date) });
+      return later({ ok: true, errors: [], warnings: warningsOf(answers), version: nextVersion(answers.date) });
     },
     register: function (answers, submissionId) {
       if (!results[submissionId]) {
         var version = nextVersion(answers.date);
-        registered[answers.date] = { by: 'mine', version: version, answers: answers };
-        results[submissionId] = { version: version, text: reportText(answers) };
+        registered[answers.date] = { by: 'mine', version: version, answers: savedAnswers(answers) };
+        results[submissionId] = {
+          ok: true,
+          date: answers.date,
+          store: answers.store,
+          version: version,
+          text: reportText(answers),
+          message:
+            '登録しました（' + dateLabel(answers.date).replace(/\(.\)$/, '') + ' ' + answers.store +
+            (version > 1 ? '、' + version + '回目の報告' : '') + '）',
+        };
       }
       return later(results[submissionId]);
     },
+    canShare: function () {
+      return true;
+    },
     share: function () {
       return later({
+        status: 'sent',
         message:
           '（見本）実際には、ここで LINE の「送り先を選ぶ画面」が開きます。管理者か店舗のグループを選ぶと、' +
           'あなたからのメッセージとして、下の「送られる文章」が届きます。',
       });
+    },
+    recordSent: function (report) {
+      sentKeys[report.date + '|' + report.store + '|' + report.version] = true;
+      return later({ ok: true });
     },
     close: function () {
       return later({

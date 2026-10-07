@@ -211,6 +211,9 @@ function staffProblems(staff) {
       problems.push(name + 'さんの開始と終了の時刻を選んでください。');
     } else if (!person.end) {
       problems.push(name + 'さんの終了の時刻を選んでください。');
+    } else if (startTimeOptions().indexOf(person.start) === -1 || timeOptions(FIRST_END_MINUTES, LAST_END_MINUTES).indexOf(person.end) === -1) {
+      // 選択肢にない時刻（文章で送った日報の 11:15 など、前の内容から入ったもの）
+      problems.push(name + 'さんの時刻を選び直してください（' + TIME_STEP_MINUTES + '分刻みです）。');
     } else if (!workHours(person.start, person.end)) {
       problems.push(name + 'さんの終了の時刻が、開始の時刻より前か同じです。');
     }
@@ -225,10 +228,12 @@ function staffProblems(staff) {
 /**
  * 手で入力した氏名の問題（なければ null）。
  * 数字があると、日報の文章にしたときに時刻と見分けられない。【】は日報の見出しと混ざる。
+ * 「〇」は日報の型の記入前の印なので、名前として読まれない。
  */
 function nameProblem(name) {
   if (/[0-9０-９]/.test(name)) return '氏名に数字は使えません。';
   if (/[【】]/.test(name)) return '氏名に【】は使えません。';
+  if (/[◯〇○]/.test(name)) return '氏名に「〇」は使えません。';
   if (name.length > NAME_MAX_LENGTH) return '氏名は' + NAME_MAX_LENGTH + '文字までにしてください。';
   return null;
 }

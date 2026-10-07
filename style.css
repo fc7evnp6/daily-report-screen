@@ -293,6 +293,7 @@ textarea {
   padding: 12px 14px;
   margin: 0 0 16px;
   border-left: 6px solid;
+  white-space: pre-line; /* GAS からの言葉の改行を残す */
 }
 
 .box.warn {
@@ -321,6 +322,36 @@ textarea {
 
 .box li:last-child {
   margin-bottom: 0;
+}
+
+/* 開いたときの知らせ：管理者にまだ送っていない日報 */
+.unsent .item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.unsent-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.unsent-actions button {
+  flex: 1;
+  min-height: 44px;
+  font-size: 16px;
+  margin-top: 0;
+}
+
+.unsent-message {
+  margin-top: 10px;
+  font-weight: 700;
+}
+
+/* 開いたときに見つかった入力の途中の、「続きから入力する」「新しく入力する」 */
+.resume-actions {
+  margin-top: 10px;
 }
 
 /* 確認画面の一覧 */

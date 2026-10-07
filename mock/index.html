@@ -9,13 +9,26 @@
   </head>
   <body>
     <!-- 画面の見本。LINE にも GAS にもつながず、入力した内容はどこにも送らない。名前と数字はすべて架空。 -->
-    <div class="sample-banner">見本です。入力した内容はどこにも送られません（名前と数字は架空です）</div>
+    <div class="sample-banner">
+      見本です。入力した内容はどこにも送られません（途中は、この端末の中にだけ48時間残ります。名前と数字は架空です）
+    </div>
     <div id="app" aria-live="polite"></div>
     <script src="../report-form.js"></script>
+    <script src="../draft.js"></script>
     <script src="../app.js"></script>
     <script src="mock-server.js"></script>
     <script>
-      startReportApp(createMockServer(new Date()));
+      // 入力の途中は、本物と同じく端末に残す（見本は人を見分けないので、決まった名前で残す）
+      var storage = null;
+      try {
+        storage = window.localStorage;
+      } catch (err) {
+        storage = null;
+      }
+      var pageCode = Math.random().toString(36).slice(2, 5).toUpperCase();
+      startReportApp(createMockServer(new Date()), {
+        draftStore: createDraftStore(storage, 'sample', { pageCode: pageCode }),
+      });
     </script>
   </body>
 </html>

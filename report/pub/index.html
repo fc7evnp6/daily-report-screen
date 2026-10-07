@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>日報の入力</title>
+    <link rel="stylesheet" href="../../style.css" />
+  </head>
+  <body>
+    <!-- 本物の入力画面（公開用）。LINE ミニアプリの公開用から開く。GAS とのやりとりは ../gas-server.js -->
+    <div id="app" aria-live="polite"></div>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="../config.js"></script>
+    <script src="../../report-form.js"></script>
+    <script src="../../draft.js"></script>
+    <script src="../../app.js"></script>
+    <script src="../gas-server.js"></script>
+    <script>
+      startLineReport('pub');
+    </script>
+  </body>
+</html>
