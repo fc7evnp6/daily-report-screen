@@ -507,6 +507,9 @@ function startReportApp(server, options) {
 
   function loadCheck() {
     state.check = null;
+    // 前の失敗の言葉（返事を読めなかった、通信できなかった）を消す。「もう一度確かめる」は goTo を通らないため
+    state.errors = [];
+    state.errorHeading = '';
     withBusy('確かめています…', function () {
       return server.check(collectAnswers());
     }, function (check) {

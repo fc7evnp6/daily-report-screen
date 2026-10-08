@@ -8,11 +8,12 @@
 //     種類は text/plain（GAS は事前の問い合わせ（OPTIONS）に答えられないため）
 //   ・GAS の返事の形は src/screen-api.js の冒頭のとおり。読めない返事は、断られたときと同じ形にする
 //   ・返事が読めなかったら（2026/10/08 の iPhone での確かめで、GAS は「完了」なのに読めない返事が1回あった）
-//     - 読むだけの問い合わせ（開く・日付ごとの読み込み・確認。GAS は何も書かない）は、自分で1回だけ送り直す。
+//     - 読むだけの問い合わせ（開く・日付ごとの読み込み・確認。GAS は何も書かない）は、1秒待ってから1回だけ送り直す。
 //       登録と送った記録は送り直さない（本人が押し直す。登録は同じ送信IDなので2回目は記録されない）
-//     - 次に起きたときに原因が分かるよう、HTTP の番号と返事の形・長さ・先頭（100文字まで）を端末に残し、
-//       言葉の後ろに「（HTTP 200・HTML）」のように出す。GAS の返事の形（JSON。日報や名簿の中身が入りうる）なら、
-//       途中で切れていても中身は残さない（形と長さだけ）。送った中身（IDトークン、答え）も残さない
+//     - 次に起きたときに原因が分かるよう、HTTP の番号と返事の形・長さを端末に残し、言葉の後ろに「（HTTP 200・HTML）」の
+//       ように出す。HTML なら題名（title の中身。100文字まで）、HTML でない文字なら先頭100文字も残す。
+//       GAS の返事の形（JSON。日報や名簿の中身が入りうる）なら、途中で切れていても中身は残さない（形と長さだけ）。
+//       送った中身（IDトークン、答え）も残さない
 //   ・IDトークンの期限（1時間）が切れていたら、入力の途中を端末に残してから、ログアウトして読み込み直す
 //     （新しいトークンになる。2026/10/07 の iPhone での確かめ）。ログインし直すのは1回だけ。読み込み直した直後に
 //     また期限切れのときや、途中を残せないときは、くり返さずに GAS の言葉（「画面を閉じて、開き直してください」）を出す
@@ -26,23 +27,32 @@ var REPORT_MESSAGES = {
   shareFailed: '管理者に送れませんでした。もう一度押すか、「文章をコピー」を使ってください。',
 };
 
-// 返事が読めなければ、自分で1回だけ送り直す問い合わせ（GAS が何も書かないもの）
+// 返事が読めなければ、自分で1回だけ送り直す問い合わせ（GAS が何も書かないもの）と、送り直す前に待つ時間（ミリ秒）
 var READ_ONLY_ACTIONS = ['profile', 'day', 'check'];
-// 読めなかった返事を端末に残す名前と、残す件数・先頭の文字数
+var RETRY_WAIT_MS = 1000;
+// 読めなかった返事を端末に残す名前と、残す件数・題名や先頭の文字数
 var REPLY_TROUBLE_KEY = 'report-reply-trouble';
 var REPLY_TROUBLE_KEEP = 10;
-var REPLY_HEAD_LENGTH = 100;
+var REPLY_KEEP_LENGTH = 100;
 
 /**
- * 読めなかった返事の形と、端末に残してよい先頭。GAS の返事の形（{ か [ で始まる）なら、中身は残さない（null）。
- * GAS の返事は、断るときや空のときも JSON なので、それ以外（HTML など）は Google の画面などで、日報の中身は入らない。
+ * 読めなかった返事の形と、端末に残してよい文字（題名 title、先頭 head。残さないものは null）。
+ * - GAS の返事の形（{ か [ で始まる）なら、中身は残さない。GAS の返事は、断るときや空のときも JSON なので、
+ *   日報や名簿の中身が入りうるのはこの形だけ
+ * - HTML（Google のエラー画面など）なら、題名（title の中身。空白はまとめて100文字まで）。先頭100文字では題名まで届かないため
+ * - それ以外の文字なら、先頭100文字
  */
 function replyShape(text) {
-  var trimmed = String(text).replace(/^[\s﻿]+/, '');
-  if (trimmed === '') return { kind: '空', head: '' };
+  var trimmed = String(text).replace(/^[\s\uFEFF]+/, '');
+  if (trimmed === '') return { kind: '空', title: null, head: null };
   var first = trimmed.charAt(0);
-  if (first === '{' || first === '[') return { kind: 'JSON', head: null };
-  return { kind: first === '<' ? 'HTML' : '文字', head: trimmed.slice(0, REPLY_HEAD_LENGTH) };
+  if (first === '{' || first === '[') return { kind: 'JSON', title: null, head: null };
+  if (first === '<') {
+    var found = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(trimmed);
+    var title = found ? found[1].replace(/\s+/g, ' ').trim().slice(0, REPLY_KEEP_LENGTH) : null;
+    return { kind: 'HTML', title: title, head: null };
+  }
+  return { kind: '文字', title: null, head: trimmed.slice(0, REPLY_KEEP_LENGTH) };
 }
 
 /** ブラウザの端末の記録（localStorage）。使えなければ null。 */
@@ -57,7 +67,7 @@ function browserStorage() {
 /**
  * GAS とやりとりする server を作る。
  * @param {{gasUrl: string, liffId: string}} config
- * @param {Object} [env] テスト用の差し替え（liff、fetch、location、ownerKeyOf、storage）。省けばブラウザのもの
+ * @param {Object} [env] テスト用の差し替え（liff、fetch、location、ownerKeyOf、storage、wait）。省けばブラウザのもの
  */
 function createGasServer(config, env) {
   env = env || {};
@@ -69,6 +79,13 @@ function createGasServer(config, env) {
     };
   var location = env.location || window.location;
   var storage = 'storage' in env ? env.storage : browserStorage();
+  var wait =
+    env.wait ||
+    function (ms) {
+      return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+      });
+    };
   var ownerKeyOf =
     env.ownerKeyOf || (typeof draftOwnerKey === 'function' ? draftOwnerKey : require('../draft.js').draftOwnerKey);
   var hooks = {};
@@ -99,6 +116,7 @@ function createGasServer(config, env) {
         status: typeof status === 'number' ? status : null,
         kind: shape.kind,
         length: String(text).length,
+        title: shape.title,
         head: shape.head,
       });
       storage.setItem(REPLY_TROUBLE_KEY, JSON.stringify(kept.slice(-REPLY_TROUBLE_KEEP)));
@@ -110,7 +128,7 @@ function createGasServer(config, env) {
 
   /**
    * GAS に送り、返事を読む。通信できなければ失敗（画面が「通信できませんでした」と出す）。
-   * 返事が読めなければ、読むだけの問い合わせは同じ中身で1回だけ送り直す。
+   * 返事が読めなければ、読むだけの問い合わせは、1秒待ってから同じ中身で1回だけ送り直す。
    * noRelogin：期限切れでもログインし直さない（送った記録。登録したあとの画面を消さないように）
    */
   function request(action, fields, noRelogin) {
@@ -147,7 +165,11 @@ function createGasServer(config, env) {
           }
           if (!reply || typeof reply.ok !== 'boolean') {
             var label = noteBadReply(action, got.status, got.text);
-            if (retriesLeft > 0) return attempt(retriesLeft - 1);
+            if (retriesLeft > 0) {
+              return wait(RETRY_WAIT_MS).then(function () {
+                return attempt(retriesLeft - 1);
+              });
+            }
             return refusal('bad_reply', REPORT_MESSAGES.badReply + '（' + label + '）');
           }
           if (reply.ok === false && reply.error === 'expired' && !noRelogin) return relogin(reply);
