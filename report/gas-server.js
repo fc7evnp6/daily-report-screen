@@ -7,6 +7,12 @@
 //   ・GAS には IDトークンだけを付けて送る（ユーザーIDやプロフィールは送らない）。本文は JSON の文字列で、
 //     種類は text/plain（GAS は事前の問い合わせ（OPTIONS）に答えられないため）
 //   ・GAS の返事の形は src/screen-api.js の冒頭のとおり。読めない返事は、断られたときと同じ形にする
+//   ・返事が読めなかったら（2026/10/08 の iPhone での確かめで、GAS は「完了」なのに読めない返事が1回あった）
+//     - 読むだけの問い合わせ（開く・日付ごとの読み込み・確認。GAS は何も書かない）は、自分で1回だけ送り直す。
+//       登録と送った記録は送り直さない（本人が押し直す。登録は同じ送信IDなので2回目は記録されない）
+//     - 次に起きたときに原因が分かるよう、HTTP の番号と返事の形・長さ・先頭（100文字まで）を端末に残し、
+//       言葉の後ろに「（HTTP 200・HTML）」のように出す。GAS の返事の形（JSON。日報や名簿の中身が入りうる）なら、
+//       途中で切れていても中身は残さない（形と長さだけ）。送った中身（IDトークン、答え）も残さない
 //   ・IDトークンの期限（1時間）が切れていたら、入力の途中を端末に残してから、ログアウトして読み込み直す
 //     （新しいトークンになる。2026/10/07 の iPhone での確かめ）。ログインし直すのは1回だけ。読み込み直した直後に
 //     また期限切れのときや、途中を残せないときは、くり返さずに GAS の言葉（「画面を閉じて、開き直してください」）を出す
@@ -20,10 +26,38 @@ var REPORT_MESSAGES = {
   shareFailed: '管理者に送れませんでした。もう一度押すか、「文章をコピー」を使ってください。',
 };
 
+// 返事が読めなければ、自分で1回だけ送り直す問い合わせ（GAS が何も書かないもの）
+var READ_ONLY_ACTIONS = ['profile', 'day', 'check'];
+// 読めなかった返事を端末に残す名前と、残す件数・先頭の文字数
+var REPLY_TROUBLE_KEY = 'report-reply-trouble';
+var REPLY_TROUBLE_KEEP = 10;
+var REPLY_HEAD_LENGTH = 100;
+
+/**
+ * 読めなかった返事の形と、端末に残してよい先頭。GAS の返事の形（{ か [ で始まる）なら、中身は残さない（null）。
+ * GAS の返事は、断るときや空のときも JSON なので、それ以外（HTML など）は Google の画面などで、日報の中身は入らない。
+ */
+function replyShape(text) {
+  var trimmed = String(text).replace(/^[\s﻿]+/, '');
+  if (trimmed === '') return { kind: '空', head: '' };
+  var first = trimmed.charAt(0);
+  if (first === '{' || first === '[') return { kind: 'JSON', head: null };
+  return { kind: first === '<' ? 'HTML' : '文字', head: trimmed.slice(0, REPLY_HEAD_LENGTH) };
+}
+
+/** ブラウザの端末の記録（localStorage）。使えなければ null。 */
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch (err) {
+    return null;
+  }
+}
+
 /**
  * GAS とやりとりする server を作る。
  * @param {{gasUrl: string, liffId: string}} config
- * @param {Object} [env] テスト用の差し替え（liff、fetch、location、ownerKeyOf）。省けばブラウザのもの
+ * @param {Object} [env] テスト用の差し替え（liff、fetch、location、ownerKeyOf、storage）。省けばブラウザのもの
  */
 function createGasServer(config, env) {
   env = env || {};
@@ -34,6 +68,7 @@ function createGasServer(config, env) {
       return window.fetch(url, options);
     };
   var location = env.location || window.location;
+  var storage = 'storage' in env ? env.storage : browserStorage();
   var ownerKeyOf =
     env.ownerKeyOf || (typeof draftOwnerKey === 'function' ? draftOwnerKey : require('../draft.js').draftOwnerKey);
   var hooks = {};
@@ -44,7 +79,38 @@ function createGasServer(config, env) {
   }
 
   /**
+   * 読めなかった返事を端末に残し（新しい10件まで。残せなくても止めない）、言葉の後ろに付ける「HTTP 200・HTML」を返す。
+   */
+  function noteBadReply(action, status, text) {
+    var shape = replyShape(text);
+    var label = 'HTTP ' + (typeof status === 'number' ? status : '?') + '・' + shape.kind;
+    if (!storage) return label;
+    try {
+      var kept = [];
+      try {
+        kept = JSON.parse(storage.getItem(REPLY_TROUBLE_KEY) || '[]');
+      } catch (err) {
+        kept = [];
+      }
+      if (!Array.isArray(kept)) kept = [];
+      kept.push({
+        at: new Date().toISOString(),
+        action: action,
+        status: typeof status === 'number' ? status : null,
+        kind: shape.kind,
+        length: String(text).length,
+        head: shape.head,
+      });
+      storage.setItem(REPLY_TROUBLE_KEY, JSON.stringify(kept.slice(-REPLY_TROUBLE_KEEP)));
+    } catch (err) {
+      // 端末に残せなくても、断り方は変わらない
+    }
+    return label;
+  }
+
+  /**
    * GAS に送り、返事を読む。通信できなければ失敗（画面が「通信できませんでした」と出す）。
+   * 返事が読めなければ、読むだけの問い合わせは同じ中身で1回だけ送り直す。
    * noRelogin：期限切れでもログインし直さない（送った記録。登録したあとの画面を消さないように）
    */
   function request(action, fields, noRelogin) {
@@ -59,25 +125,36 @@ function createGasServer(config, env) {
     Object.keys(fields || {}).forEach(function (key) {
       body[key] = fields[key];
     });
-    return fetchFn(config.gasUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(body),
-    })
-      .then(function (response) {
-        return response.text();
+    var bodyText = JSON.stringify(body);
+
+    function attempt(retriesLeft) {
+      return fetchFn(config.gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: bodyText,
       })
-      .then(function (text) {
-        var reply = null;
-        try {
-          reply = JSON.parse(text);
-        } catch (err) {
-          reply = null;
-        }
-        if (!reply || typeof reply.ok !== 'boolean') return refusal('bad_reply', REPORT_MESSAGES.badReply);
-        if (reply.ok === false && reply.error === 'expired' && !noRelogin) return relogin(reply);
-        return reply;
-      });
+        .then(function (response) {
+          return response.text().then(function (text) {
+            return { status: response.status, text: text };
+          });
+        })
+        .then(function (got) {
+          var reply = null;
+          try {
+            reply = JSON.parse(got.text);
+          } catch (err) {
+            reply = null;
+          }
+          if (!reply || typeof reply.ok !== 'boolean') {
+            var label = noteBadReply(action, got.status, got.text);
+            if (retriesLeft > 0) return attempt(retriesLeft - 1);
+            return refusal('bad_reply', REPORT_MESSAGES.badReply + '（' + label + '）');
+          }
+          if (reply.ok === false && reply.error === 'expired' && !noRelogin) return relogin(reply);
+          return reply;
+        });
+    }
+    return attempt(READ_ONLY_ACTIONS.indexOf(action) !== -1 ? 1 : 0);
   }
 
   /**
