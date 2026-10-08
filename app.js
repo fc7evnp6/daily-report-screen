@@ -14,9 +14,12 @@
 //   server.share(text)              → { status: 'sent' | 'cancelled' | 'unavailable' | 'failed', message }
 //   server.recordSent(report, how)  → 管理者に送った（how: 'shared'）・コピーした（'copied'）記録を残す（GAS の sent）
 //   server.close()                  → { message }（画面を閉じる。見本では説明を返すだけ）
-// 入力の途中は、options.draftStore（screen/draft.js）があれば端末に残す。答えを変えたときだけ書き、登録したら消す。
+// 入力の途中は、options.draftStore（screen/draft.js）があれば端末に残す。書くのは、答えを変えたとき、ログインし直す
+// 直前、「登録」を押したとき（送る前に、送信IDと答えを残す）だけ。登録したら、その登録のもとになった保存まで消す。
 // 開き直して途中があれば「続きから入力する／新しく入力する」を聞く。ログインし直した直後（RELOGIN_RESUME_MS 以内の
 // ログインし直す印があり、そのとき入力の途中があった）なら、聞かずに続きから出す。
+// 「登録」の返事が届かずにやり直すとき（押し直す、読み込み直して続きから）は、答えが同じなら同じ送信IDで送る
+// （GAS が2回目を記録しない。その間に別のスタッフが直していても、古い内容が新しい版として確定しないように）。
 
 var EXPENSE_ITEMS = [
   ['food', '食材費'],
@@ -99,7 +102,8 @@ function startReportApp(server, options) {
     unsent: [], // 開いたときの、管理者にまだ送っていない日報
     unsentMessage: '',
     busy: '',
-    submissionId: '',
+    // 登録を試みた送信IDと答え（JSON の文字）。返事が届かずにやり直すときは、内容が同じなら同じIDで送る。端末にも残す
+    pending: null,
     resumeOffer: null, // 開いたときに見つかった入力の途中（「続きから入力する」かを聞く）
     draftNotice: '', // 入力の途中の保存についての知らせ（別の画面の保存とぶつかった、など）
     resumeNotice: '', // ログインし直したあと、続きから出したことの知らせ
@@ -358,6 +362,7 @@ function startReportApp(server, options) {
       dayInfo: state.dayInfo,
       dayNotice: state.dayNotice,
       returnToConfirm: state.returnToConfirm,
+      pending: state.pending,
     };
   }
 
@@ -366,11 +371,15 @@ function startReportApp(server, options) {
     state.dirty = true;
     if (!drafts) return;
     var result = drafts.save(snapshot(), 'input');
-    // 別の画面で、もっと新しい保存がされていた。上書きせずに、新しい方を出し直す（この画面は、もう保存しない）
-    if (result.conflict) showNewerDraft(result.conflict);
+    // 別の画面で、もっと新しい保存がされていた（登録して消したあとなら conflict は null）。
+    // 上書きせずに、新しい方を出し直す（この画面は、もう保存しない）
+    if (!result.ok && 'conflict' in result) showNewerDraft(result.conflict);
   }
 
-  /** 別の画面のもっと新しい保存を、この画面に出し直して知らせる（登録したあとの画面や、使えない保存なら知らせるだけ）。 */
+  /**
+   * 別の画面のもっと新しい保存を、この画面に出し直して知らせる（登録したあとの画面や、使えない保存なら知らせるだけ）。
+   * draft が null なら、別の画面で登録したか「新しく入力する」で、途中が消された。
+   */
   function showNewerDraft(draft) {
     // 返事を待っているあいだは入れ替えない（あとから届いた返事で、入れ替えた内容が上書きされないように）
     if (!state.inFlight && draft && state.profile && state.profile.ok !== false && step().id !== 'done' && usableDraft(draft)) {
@@ -378,7 +387,10 @@ function startReportApp(server, options) {
       restore(draft.content);
       return;
     }
-    state.draftNotice = '別の画面で入力が進んでいます。この画面の入力は、端末に残していません（画面を閉じて、開き直してください）。';
+    if (!draft && step().id === 'done') return; // この画面の登録は済んでいる
+    state.draftNotice = draft
+      ? '別の画面で入力が進んでいます。この画面の入力は、端末に残していません（画面を閉じて、開き直してください）。'
+      : '別の画面で登録したか、入力を消しました。この画面の入力は、端末に残していません（画面を閉じて、開き直してください）。';
     render();
   }
 
@@ -404,6 +416,7 @@ function startReportApp(server, options) {
     state.dayInfo = c.dayInfo || null;
     state.dayNotice = c.dayNotice || '';
     state.returnToConfirm = Boolean(c.returnToConfirm);
+    state.pending = c.pending && typeof c.pending === 'object' ? c.pending : null; // 使えるかは submissionFor で確かめる
     var ids = STEPS.map(function (s) {
       return s.id;
     });
@@ -434,8 +447,10 @@ function startReportApp(server, options) {
   // 同じ端末の別の画面が、もっと新しい保存をした（この画面は、もう保存しない。新しい方を出し直す）
   if (drafts && typeof window !== 'undefined' && window.addEventListener) {
     window.addEventListener('storage', function (event) {
+      var wasStale = drafts.isStale();
       var newer = drafts.onStorageEvent(event);
       if (newer) showNewerDraft(newer);
+      else if (!wasStale && drafts.isStale()) showNewerDraft(null); // 別の画面で登録した・新しく入力し直した
     });
   }
 
@@ -492,7 +507,6 @@ function startReportApp(server, options) {
 
   function loadCheck() {
     state.check = null;
-    state.submissionId = newSubmissionId();
     withBusy('確かめています…', function () {
       return server.check(collectAnswers());
     }, function (check) {
@@ -504,11 +518,30 @@ function startReportApp(server, options) {
   }
 
   function register() {
+    if (state.inFlight) return;
+    var answers = collectAnswers();
+    // 前に登録を試みて結果が分からない内容と同じなら、同じ送信IDで送る（GAS が2回目を記録しない）。内容を変えたら新しいID
+    state.pending = submissionFor(state.pending, answers, newSubmissionId);
+    // 送る前に、送信IDと内容を端末に残す（返事が届かずに読み込み直しても、同じIDでやり直せるように）
+    var baseRev;
+    if (drafts) {
+      state.dirty = true;
+      var saved = drafts.save(snapshot(), 'submit');
+      if (saved.ok) {
+        baseRev = saved.rev;
+      } else if ('conflict' in saved) {
+        // 別の画面で、もっと新しい入力があった（または登録して消した）。古い内容を登録せずに、知らせる
+        showNewerDraft(saved.conflict);
+        return;
+      }
+    }
     withBusy('登録しています…', function () {
-      return server.register(collectAnswers(), state.submissionId);
+      return server.register(answers, state.pending.submissionId);
     }, function (result) {
       if (refused(result)) return; // 確認画面のまま
-      if (drafts) drafts.clear(); // 登録したら、入力の途中は要らない
+      // 登録したら、入力の途中は要らない。消すのは、この登録のもとになった保存まで（別の画面のもっと新しい途中は残す）
+      if (drafts) drafts.clear(baseRev);
+      state.pending = null;
       state.result = result;
       state.sentHow = '';
       state.closeAsked = false;
@@ -1049,7 +1082,7 @@ function startReportApp(server, options) {
           type: 'button',
           text: '新しく入力する',
           onclick: function () {
-            drafts.clear();
+            drafts.clear(draft.rev); // 聞いた途中まで（そのあとに別の画面で保存した途中は消さない）
             state.resumeOffer = null;
             render();
           },

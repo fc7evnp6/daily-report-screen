@@ -13,9 +13,15 @@
 //     そのあとは、この画面は保存をやめる
 //   ・同じ端末の別の画面が新しい保存をしたと知らせ（storage）が届いたときも、この画面は保存をやめる
 //   ・開いたときは、いちばん新しい保存（通し番号が大きい方。同じ番号なら保存した時刻が新しい方）から続ける
-//   ・48時間たった保存は使わず、保存するときに消す。登録したら、その人の分を消す
+//   ・48時間たった保存は使わず、保存するときに消す
+//   ・登録したとき、「新しく入力する」を選んだときは、その人の分を消す。消すのは、登録のもとになった保存
+//     （「新しく入力する」なら、聞かれた途中）の番号までだけ（別の画面がそのあとに保存した、新しい途中は消さない）
+//   ・消したことも、通し番号を1つ使う操作として残す。消す前の内容を知っている古い画面があとから保存しても、
+//     書かない（捨てた途中が戻らないように）。ただし、別の画面にもっと新しい保存があれば、その画面を止めないよう、
+//     消すだけにして番号は使わない
 //   ・通し番号のいちばん大きい値（と、それを書いた画面）は、別の名前（report-draft-last:）に残し、消したあとも残す
-//     （消したあとに開いた画面の番号が1に戻ると、古い画面の保存の方が新しく見えてしまうため）
+//     （消したあとに開いた画面の番号が1に戻ると、古い画面の保存の方が新しく見えてしまうため。消したことの知らせ
+//     （storage）も、この名前の書き換えで、ほかの画面に届く）
 //   ・ログインし直す印（いつ、続きから出すか）は、途中の保存とは別の名前（report-relogin:）に残す
 //     （途中を出さない空の画面の保存で、本当の途中が隠れないように）
 //   ・店の端末を何人かで使っても混ざらないよう、人ごとに分ける。保存の名前には、LINE のユーザーIDそのものではなく、
@@ -69,6 +75,13 @@ function createDraftStore(storage, ownerKey, options) {
       return null;
     }
     return value && typeof value.rev === 'number' && typeof value.page === 'string' ? value : null;
+  }
+
+  /** 別の画面が、この画面が知っているより新しい保存をしたか（消したことも含む）。読めなければエラーを投げる。 */
+  function behind(latest, last) {
+    var newerDraft = latest && latest.rev > knownRev && latest.page !== pageCode;
+    var newerMark = last && last.rev > knownRev && last.page !== pageCode;
+    return Boolean(newerDraft || newerMark);
   }
 
   /** 保存の名前を読む（この人の分なら { rev, page }、ほかは null）。 */
@@ -168,9 +181,7 @@ function createDraftStore(storage, ownerKey, options) {
       } catch (err) {
         return { ok: false, problem: draftErrorText(err) };
       }
-      var newerDraft = latest && latest.rev > knownRev && latest.page !== pageCode;
-      var newerMark = last && last.rev > knownRev && last.page !== pageCode;
-      if (newerDraft || newerMark) {
+      if (behind(latest, last)) {
         stale = true;
         return { ok: false, conflict: latest || null };
       }
@@ -193,13 +204,25 @@ function createDraftStore(storage, ownerKey, options) {
       return { ok: true, rev: rev };
     },
 
-    /** この人の保存をすべて消す（登録したとき、「新しく入力する」を選んだとき）。通し番号の印は残す。 */
-    clear: function () {
+    /**
+     * この人の保存を、番号 upToRev まで消す（登録したとき：登録のもとになった保存の番号。「新しく入力する」を
+     * 選んだとき：聞かれた途中の番号）。番号を渡さなければ、この画面が知っている番号まで。
+     * 別の画面にもっと新しい保存がなければ、消したことを通し番号の印に残す（古い画面の保存を断るため）。
+     */
+    clear: function (upToRev) {
       if (!storage) return { ok: false, problem: '端末の記録（localStorage）が使えない' };
+      var limit = typeof upToRev === 'number' ? upToRev : knownRev;
       try {
+        var latest = newestOrThrow();
+        var last = readLast();
         allKeys().forEach(function (key) {
-          if (parseKey(key)) storage.removeItem(key);
+          var mine = parseKey(key);
+          if (mine && mine.rev <= limit) storage.removeItem(key);
         });
+        if (behind(latest, last)) return { ok: true }; // 新しい方の画面を止めない
+        var rev = Math.max(knownRev, latest ? latest.rev : 0, last ? last.rev : 0) + 1;
+        storage.setItem(lastKey, JSON.stringify({ rev: rev, page: pageCode, cleared: true }));
+        knownRev = rev;
         return { ok: true };
       } catch (err) {
         return { ok: false, problem: draftErrorText(err) };
@@ -213,7 +236,8 @@ function createDraftStore(storage, ownerKey, options) {
 
     /**
      * 同じ端末の別の画面が端末の記録を書き換えたときの知らせ（window の storage）。
-     * この人の、別の画面の、この画面が知っているより新しい保存なら、保存をやめて、いちばん新しい保存を返す。ほかは null。
+     * この人の、別の画面の、この画面が知っているより新しい保存（消したことも含む）なら、保存をやめて、
+     * いちばん新しい保存を返す（消したあとで残っていなければ null。保存をやめたかは isStale で分かる）。ほかは null。
      */
     onStorageEvent: function (event) {
       if (!event || ('newValue' in event && event.newValue === null)) return null; // 消した知らせは見ない

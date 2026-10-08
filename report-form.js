@@ -28,6 +28,8 @@ var MAX_AMOUNT = 100000000; // 1億円以上は桁の間違いとみなす
 var MAX_COUNT = 1000;
 var NAME_MAX_LENGTH = 30; // GAS の名簿の申請と同じ
 var COMMENT_MAX_LENGTH = 1000;
+// 「登録」の送信IDの形（GAS の SCREEN_SUBMISSION_ID_PATTERN_ と同じ）
+var SUBMISSION_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
 var WEEKDAY_NAMES = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -260,6 +262,27 @@ function pad2(n) {
   return (n < 10 ? '0' : '') + n;
 }
 
+// ============================================================
+// 「登録」の送信ID
+// ============================================================
+
+/**
+ * 「登録」で送る送信IDを決める。前に登録を試みた内容（pending）と今の答えが同じなら、同じIDを使う
+ * （返事が届かずに、押し直したり読み込み直したりしてやり直すとき、GAS が2回目を記録しないように）。
+ * 内容を変えたときだけ、新しいIDにする。
+ * @param {{submissionId: string, answers: string}|null} pending 前に登録を試みた送信IDと答え（JSON の文字）
+ * @param {Object} answers 今の答え（GAS に送るもの）
+ * @param {function(): string} makeId 新しい送信IDを作る
+ * @return {{submissionId: string, answers: string}} 端末に残す形（答えは JSON の文字）
+ */
+function submissionFor(pending, answers, makeId) {
+  var text = JSON.stringify(answers);
+  var same =
+    pending !== null && typeof pending === 'object' && typeof pending.submissionId === 'string' &&
+    SUBMISSION_ID_PATTERN.test(pending.submissionId) && pending.answers === text;
+  return { submissionId: same ? pending.submissionId : makeId(), answers: text };
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     defaultReportDate: defaultReportDate,
@@ -279,5 +302,6 @@ if (typeof module !== 'undefined') {
     nameProblem: nameProblem,
     expenseTotals: expenseTotals,
     commentProblem: commentProblem,
+    submissionFor: submissionFor,
   };
 }
